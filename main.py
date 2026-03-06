@@ -13,8 +13,8 @@ app = FastAPI(title="SnapAI Storage Proxy")
 
 # Config from env
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "q0wgw4scg8s8o4cg4884wc4g.178.156.248.186.sslip.io")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "SnapAI2026_Secure!")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "snap-photos")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "False").lower() == "true"
 
