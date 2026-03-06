@@ -13,11 +13,11 @@ load_dotenv()
 app = FastAPI(title="SnapAI Storage Proxy")
 
 # Config from env
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "q0wgw4scg8s8o4cg4884wc4g.178.156.248.186.sslip.io")
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio-backend.vyzo.cloud")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "snap-photos")
-MINIO_SECURE = os.getenv("MINIO_SECURE", "False").lower() == "true"
+MINIO_SECURE = os.getenv("MINIO_SECURE", "True").lower() == "true"
 
 # Initialize MinIO client
 client = Minio(
@@ -131,6 +131,84 @@ async def upload_file(
                 "size": file_size
             }
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/gallery")
+async def get_gallery():
+    try:
+        response = client.get_object(MINIO_BUCKET, "gallery.json")
+        content = response.read()
+        response.close()
+        response.release_conn()
+        return json.loads(content)
+    except S3Error as e:
+        if e.code == "NoSuchKey":
+            return []
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class GalleryItem(BaseModel):
+    original_url: str
+    edited_url: str
+    preset_name: str
+    preset_icon: str
+
+@app.post("/gallery")
+async def update_gallery(item: GalleryItem):
+    try:
+        # 1. Load current gallery
+        gallery = []
+        try:
+            response = client.get_object(MINIO_BUCKET, "gallery.json")
+            gallery = json.loads(response.read())
+            response.close()
+            response.release_conn()
+        except S3Error as e:
+            if e.code != "NoSuchKey":
+                raise e
+
+        # 2. Add new item
+        new_entry = item.model_dump()
+        new_entry["id"] = str(uuid.uuid4())
+        new_entry["timestamp"] = time.time()
+        gallery.insert(0, new_entry)
+
+        # 3. FIFO Logic: Keep only 30
+        if len(gallery) > 30:
+            to_remove = gallery.pop()
+            # Clean up files in MinIO
+            for url_key in ["original_url", "edited_url"]:
+                url = to_remove.get(url_key)
+                if url and MINIO_ENDPOINT in url:
+                    filename_to_del = url.split("/")[-1]
+                    try:
+                        client.remove_object(MINIO_BUCKET, filename_to_del)
+                        print(f"Deleted old gallery file: {filename_to_del}")
+                    except Exception as del_e:
+                        print(f"Failed to delete {filename_to_del}: {del_e}")
+
+        # 4. Save updated gallery.json
+        gallery_data = json.dumps(gallery).encode("utf-8")
+        from io import BytesIO
+        client.put_object(
+            MINIO_BUCKET,
+            "gallery.json",
+            BytesIO(gallery_data),
+            len(gallery_data),
+            content_type="application/json"
+        )
+
+        return {"status": "success", "count": len(gallery)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/file/{filename}")
+async def delete_file(filename: str):
+    try:
+        client.remove_object(MINIO_BUCKET, filename)
+        return {"status": "success", "message": f"File {filename} deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
