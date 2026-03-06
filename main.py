@@ -11,7 +11,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="SnapAI Storage Proxy")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Config from env
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio-backend.vyzo.cloud")
