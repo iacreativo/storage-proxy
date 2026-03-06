@@ -125,9 +125,11 @@ async def upload_file(
         
         return {
             "status": "success",
-            "url": file_url,
-            "filename": filename,
-            "size": file_size
+            "data": {
+                "url": file_url,
+                "filename": filename,
+                "size": file_size
+            }
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
