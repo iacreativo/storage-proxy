@@ -1,5 +1,6 @@
-import os, time, uuid, asyncio
+import os, time, uuid, asyncio, json
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from pydantic import BaseModel
 import httpx
 from fastapi.responses import JSONResponse
 from minio import Minio
