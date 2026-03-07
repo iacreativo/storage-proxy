@@ -92,7 +92,7 @@ setup_bucket()
 async def health():
     return {"status": "ok", "service": "storage-proxy"}
 
-def optimize_image(content: bytes, max_width: int = 1280) -> bytes:
+def optimize_image(content: bytes, max_width: int = 1200) -> bytes:
     """Resize and compress image to WebP."""
     try:
         img = Image.open(io.BytesIO(content))
@@ -211,19 +211,53 @@ async def update_gallery(item: GalleryItem):
             if e.code != "NoSuchKey":
                 raise e
 
-        # 2. Add new item
+        # 2. AUTO-OPTIMIZE for Gallery (Secure and automatic method)
+        # We create specialized gallery versions (max 1200px) so high-res deliverables are not affected
+        optimized_original = item.original_url
+        optimized_edited = item.edited_url
+
+        async with httpx.AsyncClient() as h_client:
+            # Optimize Edited Image (The one people see first)
+            try:
+                print(f"Auto-optimizing gallery edited image: {item.edited_url}")
+                resp = await h_client.get(item.edited_url, timeout=30)
+                if resp.status_code == 200:
+                    opt_content = optimize_image(resp.content, max_width=1200)
+                    filename = f"gallery-{uuid.uuid4()}-edited.webp"
+                    client.put_object(MINIO_BUCKET, filename, io.BytesIO(opt_content), len(opt_content), content_type="image/webp")
+                    protocol = "https" if MINIO_SECURE else "http"
+                    optimized_edited = f"{protocol}://{MINIO_ENDPOINT}/{MINIO_BUCKET}/{filename}"
+            except Exception as e:
+                print(f"Failed to optimize gallery edited image: {e}")
+
+            # Optimize Original Image (For side-by-side)
+            try:
+                print(f"Auto-optimizing gallery original image: {item.original_url}")
+                resp = await h_client.get(item.original_url, timeout=30)
+                if resp.status_code == 200:
+                    opt_content = optimize_image(resp.content, max_width=1200)
+                    filename = f"gallery-{uuid.uuid4()}-original.webp"
+                    client.put_object(MINIO_BUCKET, filename, io.BytesIO(opt_content), len(opt_content), content_type="image/webp")
+                    protocol = "https" if MINIO_SECURE else "http"
+                    optimized_original = f"{protocol}://{MINIO_ENDPOINT}/{MINIO_BUCKET}/{filename}"
+            except Exception as e:
+                print(f"Failed to optimize gallery original image: {e}")
+
+        # 3. Add new item with optimized URLs
         new_entry = item.model_dump()
         new_entry["id"] = str(uuid.uuid4())
         new_entry["timestamp"] = time.time()
+        new_entry["original_url"] = optimized_original
+        new_entry["edited_url"] = optimized_edited
         gallery.insert(0, new_entry)
 
-        # 3. FIFO Logic: Keep only 30
+        # 4. FIFO Logic: Keep only 30
         if len(gallery) > 30:
             to_remove = gallery.pop()
-            # Clean up files in MinIO
+            # Clean up files in MinIO (only if they are gallery-specific)
             for url_key in ["original_url", "edited_url"]:
                 url = to_remove.get(url_key)
-                if url and MINIO_ENDPOINT in url:
+                if url and "gallery-" in url:
                     filename_to_del = url.split("/")[-1]
                     try:
                         client.remove_object(MINIO_BUCKET, filename_to_del)
@@ -231,7 +265,7 @@ async def update_gallery(item: GalleryItem):
                     except Exception as del_e:
                         print(f"Failed to delete {filename_to_del}: {del_e}")
 
-        # 4. Save updated gallery.json
+        # 5. Save updated gallery.json
         gallery_data = json.dumps(gallery).encode("utf-8")
         from io import BytesIO
         client.put_object(
@@ -242,9 +276,11 @@ async def update_gallery(item: GalleryItem):
             content_type="application/json"
         )
 
-        return {"status": "success", "count": len(gallery)}
+        return {"status": "success", "count": len(gallery), "optimized": True}
     except Exception as e:
+        print(f"Gallery update error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/file/{filename}")
 async def delete_file(filename: str):
