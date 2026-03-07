@@ -1,7 +1,8 @@
 import os, time, uuid, asyncio, json
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from pydantic import BaseModel
-import httpx
+import httpx, io
+from PIL import Image
 from fastapi.responses import JSONResponse
 from minio import Minio
 from minio.error import S3Error
@@ -91,10 +92,34 @@ setup_bucket()
 async def health():
     return {"status": "ok", "service": "storage-proxy"}
 
+def optimize_image(content: bytes, max_width: int = 1280) -> bytes:
+    """Resize and compress image to WebP."""
+    try:
+        img = Image.open(io.BytesIO(content))
+        
+        # Convert to RGB if necessary (e.g. RGBA)
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+            
+        # Resize if width > max_width
+        if img.width > max_width:
+            ratio = max_width / float(img.width)
+            new_height = int(float(img.height) * ratio)
+            img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+            
+        # Save to WebP
+        out_io = io.BytesIO()
+        img.save(out_io, format="WEBP", quality=80, method=6)
+        return out_io.getvalue()
+    except Exception as e:
+        print(f"Optimization error: {e}")
+        return content # Return original if optimization fails
+
 @app.post("/upload")
 async def upload_file(
     file: UploadFile = File(None),
-    image: str = Form(None)
+    image: str = Form(None),
+    optimize: bool = Form(False) # Inverted default to protect production quality
 ):
     try:
         content = b""
@@ -116,11 +141,16 @@ async def upload_file(
         else:
             raise HTTPException(status_code=400, detail="No file or image URL provided")
 
+        # Optimize image ONLY if requested (for gallery)
+        if optimize and content_type.startswith("image/"):
+            content = optimize_image(content)
+            original_filename = os.path.splitext(original_filename)[0] + ".webp"
+            content_type = "image/webp"
+
         filename = f"{uuid.uuid4()}-{original_filename}"
         file_size = len(content)
         
-        from io import BytesIO
-        data = BytesIO(content)
+        data = io.BytesIO(content)
         
         client.put_object(
             MINIO_BUCKET,
@@ -165,6 +195,7 @@ class GalleryItem(BaseModel):
     edited_url: str
     preset_name: str
     preset_icon: str
+    preset_description: str = ""
 
 @app.post("/gallery")
 async def update_gallery(item: GalleryItem):
