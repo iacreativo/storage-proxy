@@ -82,7 +82,7 @@ def setup_bucket():
         client.set_bucket_policy(MINIO_BUCKET, json.dumps(policy))
         print("Bucket policy set to Public Read.")
 
-    except S3Error as e:
+    except Exception as e:
         print(f"Error during MinIO setup: {e}")
 
 # Run setup on startup
@@ -244,7 +244,12 @@ async def update_gallery(item: GalleryItem):
                 print(f"Failed to optimize gallery original image: {e}")
 
         # 3. Add new item with optimized URLs
-        new_entry = item.model_dump()
+        # Compatibility between Pydantic v1 and v2
+        if hasattr(item, "model_dump"):
+            new_entry = item.model_dump()
+        else:
+            new_entry = item.dict()
+
         new_entry["id"] = str(uuid.uuid4())
         new_entry["timestamp"] = time.time()
         new_entry["original_url"] = optimized_original
