@@ -31,6 +31,10 @@ MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "snap-photos")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "True").lower() == "true"
 
+# Supabase Config for Refunds
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
 # Initialize MinIO client
 client = Minio(
     MINIO_ENDPOINT,
@@ -224,6 +228,8 @@ class UserErrorItem(BaseModel):
     error_message: str
     execution_id: str = ""
     preset_name: str = "Unknown"
+    refund_credits: bool = True
+    credits_amount: int = 1
 
 @app.post("/user-gallery")
 async def update_user_gallery(item: UserGalleryItem):
@@ -280,6 +286,31 @@ async def get_user_gallery(user_id: str):
 @app.post("/user-gallery/error")
 async def log_user_error(item: UserErrorItem):
     try:
+        # 1. Refund Credits if requested
+        refund_status = "Not Requested"
+        if item.refund_credits and SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+            try:
+                async with httpx.AsyncClient() as h_client:
+                    # We use RPC directly via Service Role to avoid RLS issues
+                    rpc_url = f"{SUPABASE_URL}/rest/v1/rpc/refund_credits"
+                    headers = {
+                        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                        "Content-Type": "application/json"
+                    }
+                    payload = {
+                        "p_user_id": item.user_id,
+                        "p_amount": item.credits_amount
+                    }
+                    resp = await h_client.post(rpc_url, json=payload, timeout=10)
+                    if resp.status_code == 200:
+                        refund_status = "Success"
+                    else:
+                        refund_status = f"Failed ({resp.status_code}): {resp.text}"
+            except Exception as re:
+                refund_status = f"Error: {str(re)}"
+
+        # 2. Log Error
         path = f"user_data/{item.user_id}/errors.json"
         errors = []
         try:
@@ -292,10 +323,69 @@ async def log_user_error(item: UserErrorItem):
 
         new_error = item.dict()
         new_error["timestamp"] = time.time()
+        new_error["refund_status"] = refund_status
         errors.insert(0, new_error)
         
-        # Keep only last 10 errors
-        if len(errors) > 10: errors.pop()
+        if len(errors) > 20: errors.pop()
+
+        data = json.dumps(errors).encode("utf-8")
+        client.put_object(MINIO_BUCKET, path, io.BytesIO(data), len(data), content_type="application/json")
+        return {"status": "success", "refund": refund_status}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class DeleteItemRequest(BaseModel):
+    user_id: str
+    item_id: str
+
+@app.post("/user-gallery/delete-item")
+async def delete_gallery_item(req: DeleteItemRequest):
+    try:
+        path = f"user_data/{req.user_id}/gallery.json"
+        response = client.get_object(MINIO_BUCKET, path)
+        gallery = json.loads(response.read())
+        response.close()
+        response.release_conn()
+
+        # Find item
+        item = next((x for x in gallery if x["id"] == req.item_id), None)
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+
+        # Delete objects from MinIO if they are local
+        for key in ["display_url", "original_download_url"]:
+            url = item.get(key, "")
+            if f"{MINIO_ENDPOINT}/{MINIO_BUCKET}/" in url:
+                obj_name = url.split(f"{MINIO_BUCKET}/")[-1]
+                try: client.remove_object(MINIO_BUCKET, obj_name)
+                except: pass
+
+        # Remove from list
+        new_gallery = [x for x in gallery if x["id"] != req.item_id]
+        data = json.dumps(new_gallery).encode("utf-8")
+        client.put_object(MINIO_BUCKET, path, io.BytesIO(data), len(data), content_type="application/json")
+        
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class DeleteErrorRequest(BaseModel):
+    user_id: str
+    error_index: int
+
+@app.post("/user-gallery/delete-error")
+async def delete_user_error(req: DeleteErrorRequest):
+    try:
+        path = f"user_data/{req.user_id}/errors.json"
+        response = client.get_object(MINIO_BUCKET, path)
+        errors = json.loads(response.read())
+        response.close()
+        response.release_conn()
+
+        if 0 <= req.error_index < len(errors):
+            errors.pop(req.error_index)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid error index")
 
         data = json.dumps(errors).encode("utf-8")
         client.put_object(MINIO_BUCKET, path, io.BytesIO(data), len(data), content_type="application/json")
