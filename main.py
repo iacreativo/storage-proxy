@@ -215,8 +215,8 @@ class UserGalleryItem(BaseModel):
     user_id: str
     original_url: str
     edited_url: str
-    preset_name: str
-    preset_icon: str
+    preset_name: str = "Solo Reescalado"
+    preset_icon: str = "🔍"
     preset_description: str = ""
 
 class UserErrorItem(BaseModel):
