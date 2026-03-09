@@ -93,8 +93,8 @@ setup_bucket()
 async def health():
     return {"status": "ok", "service": "storage-proxy"}
 
-def optimize_image(content: bytes, max_width: int = 1200) -> bytes:
-    """Resize and compress image to WebP Lossless."""
+def optimize_image(content: bytes, max_width: int = 1200, lossless: bool = True, quality: int = 80) -> bytes:
+    """Resize and compress image to WebP."""
     try:
         img = Image.open(io.BytesIO(content))
         if img.mode in ("RGBA", "P"):
@@ -105,8 +105,8 @@ def optimize_image(content: bytes, max_width: int = 1200) -> bytes:
             img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
             
         out_io = io.BytesIO()
-        # Using lossless=True for photographers high-fidelity
-        img.save(out_io, format="WEBP", lossless=True, method=6)
+        # Use lossless for photographers, lossy for speed in public gallery
+        img.save(out_io, format="WEBP", lossless=lossless, quality=quality, method=6)
         return out_io.getvalue()
     except Exception as e:
         print(f"Optimization error: {e}")
@@ -138,7 +138,8 @@ async def upload_file(
             raise HTTPException(status_code=400, detail="No file or image URL provided")
 
         if optimize and content_type.startswith("image/"):
-            content = optimize_image(content)
+            # Default to high-fidelity (lossless) for direct uploads
+            content = optimize_image(content, lossless=True)
             original_filename = os.path.splitext(original_filename)[0] + ".webp"
             content_type = "image/webp"
 
@@ -193,7 +194,8 @@ async def update_gallery(item: GalleryItem):
             try:
                 resp = await h_client.get(item.edited_url, timeout=30)
                 if resp.status_code == 200:
-                    opt_content = optimize_image(resp.content, max_width=1200)
+                    # Public gallery: Speed is priority. Use lossy compression (quality 80)
+                    opt_content = optimize_image(resp.content, max_width=1200, lossless=False, quality=80)
                     filename = f"gallery-{uuid.uuid4()}.webp"
                     client.put_object(MINIO_BUCKET, filename, io.BytesIO(opt_content), len(opt_content), content_type="image/webp")
                     protocol = "https" if MINIO_SECURE else "http"
