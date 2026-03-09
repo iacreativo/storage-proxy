@@ -3,7 +3,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from pydantic import BaseModel
 import httpx, io
 from PIL import Image
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from minio import Minio
 from minio.error import S3Error
 from minio.commonconfig import CopySource
@@ -246,13 +246,14 @@ async def update_user_gallery(item: UserGalleryItem):
         except S3Error as e:
             if e.code != "NoSuchKey": raise e
 
-        # 1. Create Display Version (WebP Lossless)
+        # 1. Create Display Version (WebP Optimized)
         display_url = item.edited_url
         async with httpx.AsyncClient() as h_client:
             try:
                 resp = await h_client.get(item.edited_url, timeout=30)
                 if resp.status_code == 200:
-                    opt_content = optimize_image(resp.content, max_width=1600)
+                    # For Personal Gallery display: Use lossy quality 85 for balance
+                    opt_content = optimize_image(resp.content, max_width=1200, lossless=False, quality=85)
                     filename = f"user_data/{item.user_id}/display-{uuid.uuid4()}.webp"
                     client.put_object(MINIO_BUCKET, filename, io.BytesIO(opt_content), len(opt_content), content_type="image/webp")
                     protocol = "https" if MINIO_SECURE else "http"
@@ -425,6 +426,33 @@ async def get_user_status(user_id: str):
             "recent_errors": errors,
             "expiry_hours": 72
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/download/{filename}")
+async def download_file(filename: str):
+    """Force download of a file from MinIO."""
+    try:
+        # Get object from MinIO
+        response = client.get_object(MINIO_BUCKET, filename)
+        
+        # Determine clean filename for the user
+        # Remove UUID prefix (36 chars + dash) if present
+        clean_name = filename
+        if len(filename) > 37 and filename[36] == '-':
+            clean_name = filename[37:]
+
+        return StreamingResponse(
+            response,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{clean_name}"'
+            }
+        )
+    except S3Error as e:
+        if e.code == "NoSuchKey":
+            raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
