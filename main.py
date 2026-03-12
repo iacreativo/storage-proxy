@@ -207,7 +207,19 @@ async def update_gallery(item: GalleryItem):
         new_entry["timestamp"] = time.time()
         new_entry["edited_url"] = optimized_edited
         gallery.insert(0, new_entry)
-        if len(gallery) > 30: gallery.pop()
+        
+        # Keep only 15 items in public gallery
+        if len(gallery) > 15:
+            removed_item = gallery.pop()
+            # Delete old webp file from MinIO to avoid orphan files
+            if removed_item.get("edited_url"):
+                old_filename = removed_item["edited_url"].split("/")[-1]
+                if old_filename.startswith("gallery-"):
+                    try:
+                        client.remove_object(MINIO_BUCKET, old_filename)
+                        print(f"[Gallery] Deleted old file: {old_filename}")
+                    except Exception as del_err:
+                        print(f"[Gallery] Warning: Could not delete old file: {del_err}")
 
         gallery_data = json.dumps(gallery).encode("utf-8")
         client.put_object(MINIO_BUCKET, "gallery.json", io.BytesIO(gallery_data), len(gallery_data), content_type="application/json")
