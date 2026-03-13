@@ -49,18 +49,19 @@ def setup_bucket():
             client.make_bucket(MINIO_BUCKET)
             print(f"Bucket {MINIO_BUCKET} created.")
         
-        # Configure Lifecycle Policy (3 days retention - 72 hours)
+        # Configure Lifecycle Policy (5 minutes retention for testing)
+        # Using 1 day as MinIO may not support sub-day precision
         config = LifecycleConfig(
             [
                 Rule(
                     status="Enabled",
                     rule_id="DeleteOldPhotos",
-                    expiration=Expiration(days=3),
+                    expiration=Expiration(days=1),  # TEMPORAL: 1 day for testing (change back to 3 after test)
                 )
             ]
         )
         client.set_bucket_lifecycle(MINIO_BUCKET, config)
-        print("Lifecycle policy (3 days) configured.")
+        print("Lifecycle policy (1 day TEMPORAL for testing) configured.")
         
         # Make bucket public for easy URL sharing
         policy = {
@@ -436,7 +437,7 @@ async def get_user_status(user_id: str):
             "user_id": user_id,
             "images_generated": count,
             "recent_errors": errors,
-            "expiry_hours": 72
+            "expiry_hours": 0.083  # TEMPORAL: 5 minutes for testing (change back to 72 after test)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
