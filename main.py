@@ -31,6 +31,10 @@ MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "snap-photos")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "True").lower() == "true"
 
+# Expiry configuration (in hours)
+# Set to 0.083 (5 minutes) for testing, or 72 for production
+IMAGE_EXPIRY_HOURS = float(os.getenv("IMAGE_EXPIRY_HOURS", "0.083"))  # Default 5 minutes for testing
+
 # Supabase Config for Refunds
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
@@ -237,6 +241,7 @@ class UserGalleryItem(BaseModel):
     preset_name: str = "Solo Reescalado"
     preset_icon: str = "🔍"
     preset_description: str = ""
+    original_download_url: str = ""
 
 class UserErrorItem(BaseModel):
     user_id: str
@@ -277,7 +282,8 @@ async def update_user_gallery(item: UserGalleryItem):
         new_entry["id"] = str(uuid.uuid4())
         new_entry["timestamp"] = time.time()
         new_entry["display_url"] = display_url
-        new_entry["original_download_url"] = item.edited_url # The full resolution edit
+        # Use original_download_url if provided, otherwise use edited_url as fallback
+        new_entry["original_download_url"] = item.original_download_url if item.original_download_url else item.edited_url
         gallery.insert(0, new_entry)
 
         data = json.dumps(gallery).encode("utf-8")
@@ -294,9 +300,43 @@ async def get_user_gallery(user_id: str):
         content = response.read()
         response.close()
         response.release_conn()
-        return json.loads(content)
+        gallery = json.loads(content)
+        
+        # Filter and delete expired images
+        current_time = time.time()
+        expiry_seconds = IMAGE_EXPIRY_HOURS * 3600
+        expired_items = []
+        valid_items = []
+        
+        for item in gallery:
+            age = current_time - item.get("timestamp", 0)
+            if age > expiry_seconds:
+                # Mark as expired and delete files
+                expired_items.append(item)
+                # Delete associated files from MinIO
+                for key in ["display_url", "original_download_url", "edited_url"]:
+                    url = item.get(key, "")
+                    if url and MINIO_BUCKET in url:
+                        try:
+                            filename = url.split(f"{MINIO_BUCKET}/")[-1]
+                            client.remove_object(MINIO_BUCKET, filename)
+                            print(f"[Expiry] Deleted: {filename}")
+                        except Exception as del_err:
+                            print(f"[Expiry] Warning: Could not delete {filename}: {del_err}")
+            else:
+                valid_items.append(item)
+        
+        # Save gallery without expired items
+        if expired_items:
+            data = json.dumps(valid_items).encode("utf-8")
+            client.put_object(MINIO_BUCKET, path, io.BytesIO(data), len(data), content_type="application/json")
+            print(f"[Expiry] Cleaned {len(expired_items)} expired items for user {user_id}")
+        
+        return valid_items
     except S3Error as e:
         if e.code == "NoSuchKey": return []
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/user-gallery/error")
@@ -437,7 +477,7 @@ async def get_user_status(user_id: str):
             "user_id": user_id,
             "images_generated": count,
             "recent_errors": errors,
-            "expiry_hours": 0.083  # TEMPORAL: 5 minutes for testing (change back to 72 after test)
+            "expiry_hours": IMAGE_EXPIRY_HOURS
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -474,6 +514,69 @@ async def delete_file(filename: str):
     try:
         client.remove_object(MINIO_BUCKET, filename)
         return {"status": "success", "message": f"File {filename} deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/cleanup-expired")
+async def cleanup_expired_images():
+    """Cleanup endpoint - call periodically to delete expired images from all users"""
+    try:
+        # List all objects in user_data prefix
+        user_dirs = set()
+        
+        # First, get all user directories
+        try:
+            objects = client.list_objects(MINIO_BUCKET, prefix="user_data/", recursive=True)
+            for obj in objects:
+                if "/" in obj.object_name:
+                    user_dir = obj.object_name.split("/")[1]
+                    user_dirs.add(user_dir)
+        except Exception as e:
+            print(f"[Cleanup] Error listing user directories: {e}")
+        
+        total_cleaned = 0
+        current_time = time.time()
+        expiry_seconds = IMAGE_EXPIRY_HOURS * 3600
+        
+        # Process each user's gallery
+        for user_id in user_dirs:
+            gallery_path = f"user_data/{user_id}/gallery.json"
+            try:
+                response = client.get_object(MINIO_BUCKET, gallery_path)
+                gallery = json.loads(response.read())
+                response.close()
+                response.release_conn()
+                
+                valid_items = []
+                for item in gallery:
+                    age = current_time - item.get("timestamp", 0)
+                    if age > expiry_seconds:
+                        # Delete associated files
+                        for key in ["display_url", "original_download_url", "edited_url"]:
+                            url = item.get(key, "")
+                            if url and MINIO_BUCKET in url:
+                                try:
+                                    filename = url.split(f"{MINIO_BUCKET}/")[-1]
+                                    client.remove_object(MINIO_BUCKET, filename)
+                                except: pass
+                        total_cleaned += 1
+                    else:
+                        valid_items.append(item)
+                
+                # Save cleaned gallery
+                if len(valid_items) != len(gallery):
+                    data = json.dumps(valid_items).encode("utf-8")
+                    client.put_object(MINIO_BUCKET, gallery_path, io.BytesIO(data), len(data), content_type="application/json")
+                    print(f"[Cleanup] User {user_id}: removed {len(gallery) - len(valid_items)} expired items")
+                    
+            except Exception as e:
+                print(f"[Cleanup] Error processing user {user_id}: {e}")
+        
+        return {
+            "status": "success",
+            "cleaned_count": total_cleaned,
+            "expiry_hours": IMAGE_EXPIRY_HOURS
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
