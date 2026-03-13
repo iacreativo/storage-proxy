@@ -32,8 +32,8 @@ MINIO_BUCKET = os.getenv("MINIO_BUCKET", "snap-photos")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "True").lower() == "true"
 
 # Expiry configuration (in hours)
-# Set to 0.083 (5 minutes) for testing, or 72 for production
-IMAGE_EXPIRY_HOURS = float(os.getenv("IMAGE_EXPIRY_HOURS", "0.083"))  # Default 5 minutes for testing
+# Set to 72 for production, or lower value (e.g., 0.083 for 5 min) for testing
+IMAGE_EXPIRY_HOURS = float(os.getenv("IMAGE_EXPIRY_HOURS", "72"))  # Default 72 hours (production)
 
 # Supabase Config for Refunds
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
