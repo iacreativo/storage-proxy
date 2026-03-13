@@ -302,37 +302,9 @@ async def get_user_gallery(user_id: str):
         response.release_conn()
         gallery = json.loads(content)
         
-        # Filter and delete expired images
-        current_time = time.time()
-        expiry_seconds = IMAGE_EXPIRY_HOURS * 3600
-        expired_items = []
-        valid_items = []
-        
-        for item in gallery:
-            age = current_time - item.get("timestamp", 0)
-            if age > expiry_seconds:
-                # Mark as expired and delete files
-                expired_items.append(item)
-                # Delete associated files from MinIO
-                for key in ["display_url", "original_download_url", "edited_url"]:
-                    url = item.get(key, "")
-                    if url and MINIO_BUCKET in url:
-                        try:
-                            filename = url.split(f"{MINIO_BUCKET}/")[-1]
-                            client.remove_object(MINIO_BUCKET, filename)
-                            print(f"[Expiry] Deleted: {filename}")
-                        except Exception as del_err:
-                            print(f"[Expiry] Warning: Could not delete {filename}: {del_err}")
-            else:
-                valid_items.append(item)
-        
-        # Save gallery without expired items
-        if expired_items:
-            data = json.dumps(valid_items).encode("utf-8")
-            client.put_object(MINIO_BUCKET, path, io.BytesIO(data), len(data), content_type="application/json")
-            print(f"[Expiry] Cleaned {len(expired_items)} expired items for user {user_id}")
-        
-        return valid_items
+        # Return gallery without automatic cleanup
+        # Cleanup is handled by separate microservice
+        return gallery
     except S3Error as e:
         if e.code == "NoSuchKey": return []
         raise HTTPException(status_code=500, detail=str(e))
