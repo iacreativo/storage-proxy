@@ -489,69 +489,6 @@ async def delete_file(filename: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/cleanup-expired")
-async def cleanup_expired_images():
-    """Cleanup endpoint - call periodically to delete expired images from all users"""
-    try:
-        # List all objects in user_data prefix
-        user_dirs = set()
-        
-        # First, get all user directories
-        try:
-            objects = client.list_objects(MINIO_BUCKET, prefix="user_data/", recursive=True)
-            for obj in objects:
-                if "/" in obj.object_name:
-                    user_dir = obj.object_name.split("/")[1]
-                    user_dirs.add(user_dir)
-        except Exception as e:
-            print(f"[Cleanup] Error listing user directories: {e}")
-        
-        total_cleaned = 0
-        current_time = time.time()
-        expiry_seconds = IMAGE_EXPIRY_HOURS * 3600
-        
-        # Process each user's gallery
-        for user_id in user_dirs:
-            gallery_path = f"user_data/{user_id}/gallery.json"
-            try:
-                response = client.get_object(MINIO_BUCKET, gallery_path)
-                gallery = json.loads(response.read())
-                response.close()
-                response.release_conn()
-                
-                valid_items = []
-                for item in gallery:
-                    age = current_time - item.get("timestamp", 0)
-                    if age > expiry_seconds:
-                        # Delete associated files
-                        for key in ["display_url", "original_download_url", "edited_url"]:
-                            url = item.get(key, "")
-                            if url and MINIO_BUCKET in url:
-                                try:
-                                    filename = url.split(f"{MINIO_BUCKET}/")[-1]
-                                    client.remove_object(MINIO_BUCKET, filename)
-                                except: pass
-                        total_cleaned += 1
-                    else:
-                        valid_items.append(item)
-                
-                # Save cleaned gallery
-                if len(valid_items) != len(gallery):
-                    data = json.dumps(valid_items).encode("utf-8")
-                    client.put_object(MINIO_BUCKET, gallery_path, io.BytesIO(data), len(data), content_type="application/json")
-                    print(f"[Cleanup] User {user_id}: removed {len(gallery) - len(valid_items)} expired items")
-                    
-            except Exception as e:
-                print(f"[Cleanup] Error processing user {user_id}: {e}")
-        
-        return {
-            "status": "success",
-            "cleaned_count": total_cleaned,
-            "expiry_hours": IMAGE_EXPIRY_HOURS
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
