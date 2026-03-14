@@ -316,6 +316,8 @@ async def log_user_error(item: UserErrorItem):
     try:
         # 1. Refund Credits if requested
         refund_status = "Not Requested"
+        print(f"[Error] Processing refund request: user={item.user_id}, credits={item.credits_amount}, refund={item.refund_credits}")
+        
         if item.refund_credits and SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
             try:
                 async with httpx.AsyncClient() as h_client:
@@ -327,16 +329,23 @@ async def log_user_error(item: UserErrorItem):
                         "Content-Type": "application/json"
                     }
                     payload = {
-                        "p_user_id": item.user_id,
-                        "p_amount": item.credits_amount
+                        "p_user_id": str(item.user_id),
+                        "p_amount": int(item.credits_amount)
                     }
+                    print(f"[Error] Calling refund_credits with payload: {payload}")
                     resp = await h_client.post(rpc_url, json=payload, timeout=10)
+                    resp_text = resp.text
+                    print(f"[Error] Refund response: {resp.status_code} - {resp_text}")
+                    
                     if resp.status_code == 200:
                         refund_status = "Success"
                     else:
-                        refund_status = f"Failed ({resp.status_code}): {resp.text}"
+                        refund_status = f"Failed ({resp.status_code}): {resp_text}"
             except Exception as re:
+                print(f"[Error] Refund exception: {str(re)}")
                 refund_status = f"Error: {str(re)}"
+        else:
+            print(f"[Error] Refund skipped - refund_credits={item.refund_credits}, SUPABASE_URL={bool(SUPABASE_URL)}, SUPABASE_SERVICE_ROLE_KEY={bool(SUPABASE_SERVICE_ROLE_KEY)}")
 
         # 2. Log Error
         path = f"user_data/{item.user_id}/errors.json"
