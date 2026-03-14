@@ -242,6 +242,7 @@ class UserGalleryItem(BaseModel):
     preset_icon: str = "🔍"
     preset_description: str = ""
     original_download_url: str = ""
+    delivery_id: str = ""
 
 class UserErrorItem(BaseModel):
     user_id: str
